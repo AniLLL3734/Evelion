@@ -56,8 +56,10 @@ This project is a heavily modified and upgraded version of the original **Evelio
 
 ## 🚀 How To Use
 
-**Supported Version:** This cheat is designed for the **8684 Steam Build** (Steam Legacy Version).
-**Important:** The game **MUST** be running in **Windowed Mode**. Fullscreen is not supported due to the external overlay nature.
+> [!IMPORTANT]
+> **Game Version Requirement:** You **MUST** switch your Counter-Strike 1.6 to the `steam_legacy` (Pre-25th Anniversary Build) version via Steam Betas. This cheat is specifically designed for the **8684 Steam Build**.
+> 
+> **Display Mode:** The game **MUST** be running in **Windowed Mode**. Fullscreen is not supported due to the external overlay rendering.
 
 ### 🛠️ Compilation Instructions
 To run this cheat, you need to compile the source code manually using Visual Studio:
