@@ -25,7 +25,7 @@ A highly optimized, fully external **Counter-Strike 1.6** cheat built with C++ a
 
 This project is a heavily modified and upgraded version of the original **Evelion** cheat.
 
-* **Original Creator:** [3a1](https://github.com/3a1/EvelionFeatures) - Created the base external architecture, ImGui overlay, and bypass systems.
+* **Original Creator:** [3a1](https://github.com/3a1/Evelion) - Created the base external architecture, ImGui overlay, and bypass systems.
 * **Upgraded By:** [AniLLL3734](https://github.com/AniLLL3734) - Integrated the custom **Aimbot**, advanced **Visuals (ESP)**, and various UX improvements.
 
 *Huge thanks to the original author for making the base open-source under the MIT License!*
@@ -47,6 +47,13 @@ This project is a heavily modified and upgraded version of the original **Evelio
 - **Team Check:** Filters out teammates automatically; highlights enemies only.
 - **Custom Colors:** Fully customizable RGB color picker for all ESP elements directly within the menu.
 
+### 🛡️ Stability & Optimization (v1.3 Update)
+- **Universal PC Compatibility:** Fixed the infamous "Insert Key Crash" that occurred on many systems.
+- **Thread Safety:** Implemented full Mutex locking for all shared memory resources, eliminating race condition crashes.
+- **Enhanced Memory Management:** Safe pointer handling and automatic buffer validation to prevent heap/stack overflows.
+- **x64 Compatible Junk Code:** Re-engineered the obfuscation engine to support modern x64 compilation environments without assembly conflicts.
+- **DirectX Resource Safety:** Robust device-reset handling to prevent crashes when resizing or minimizing the game window.
+
 ### 🛡️ Bypass & Stealth
 - **Stream Proof:** Built as a standalone overlay using DirectX 9 & ImGui. It renders on top of the game, meaning recording software like OBS won't capture the cheat!
 - **Server Bypass:** Being entirely external, it effortlessly bypasses most server-side anti-cheats (SMAC, Demo Checkers).
@@ -65,7 +72,7 @@ This project is a heavily modified and upgraded version of the original **Evelio
 To run this cheat, you need to compile the source code manually using Visual Studio:
 1. Open `Evelion.sln` in **Visual Studio 2022**.
 2. Set the build configuration from `Debug` to **`Release`**.
-3. Set the platform from `x64` to **`x86`**.
+3. Set the platform from `x64` to **`x86`** (Solution platform usually `x86`, project target `Win32`).
 4. Build the solution (`Ctrl + Shift + B`).
 5. Your executable will be ready in the `Release` folder.
 
@@ -82,11 +89,12 @@ To run this cheat, you need to compile the source code manually using Visual Stu
 
 ---
 
-## 📝 To-Do
-- [ ] Improve & optimize overall performance.
-- [ ] Reduce rendering delay.
-- [ ] Separate rendering buffers to multiply threads.
+## 📝 Progress
+- [x] Improve & optimize overall performance. (Done in v1.3)
+- [x] Fix Menu/Insert Key stability issues. (Done in v1.3)
+- [x] Implement Thread-Safe Mutex system. (Done in v1.3)
 - [ ] Add support for other Counter-Strike versions (Non-Steam etc.).
+- [ ] Add more Aimbot targeting modes.
 
 ---
 

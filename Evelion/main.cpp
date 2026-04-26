@@ -508,19 +508,23 @@ DebugLogger g_Logger;
 // WarGods cannot ban the Hash if it changes every minute.
 volatile const char* BUILD_T = __DATE__ " " __TIME__; 
 
-const auto memory = Memory{ xorstr_("hl.exe") };
-
-const auto hw = memory.GetModuleAddress(xorstr_("hw.dll"));
-const auto client = memory.GetModuleAddress(xorstr_("client.dll"));
+// CRITICAL FIX: These were global constructors running before main().
+// If hl.exe wasn't running, processHandle=NULL, all reads crash.
+// Now they are pointers initialized in WinMain() after process check.
+Memory* g_memory = nullptr;
+uintptr_t hw = 0;
+uintptr_t client = 0;
 
 size_t viewMatrixSize = 0x40;
-void* viewMatrixBuffer = malloc(viewMatrixSize);
+void* viewMatrixBuffer = nullptr;
 
-size_t entityListSize = 0x940C;
-void* entityListBuffer = malloc(entityListSize);
+size_t entityListSize = 0x9600; // FIXED: Was 0x940C, too small for 64 players (need 64*0x250=0x9400 + safety margin)
+void* entityListBuffer = nullptr;
 
-HWND hwnd1;
-int id = GetWindowThreadProcessId(hwnd1, &Game::PID);
+HWND hwnd1 = NULL;
+// CRITICAL FIX: Removed uninitialized hwnd1 usage:
+// Old code: int id = GetWindowThreadProcessId(hwnd1, &Game::PID); // CRASHED - hwnd1 was garbage!
+int id = 0;
 // ==============
 // end of initialization
 
@@ -557,9 +561,10 @@ void MatrixUpdate() {
 
 	while (1) {
 		while (esp) {
-
-			memory.ReadHugeMemory(hw + 0xEC9780, viewMatrixBuffer, viewMatrixSize);
-			memcpy(gWorldToScreen, viewMatrixBuffer, sizeof(gWorldToScreen));
+			if (g_memory && viewMatrixBuffer && hw != 0) {
+				g_memory->ReadHugeMemory(hw + 0xEC9780, viewMatrixBuffer, viewMatrixSize);
+				memcpy(gWorldToScreen, viewMatrixBuffer, sizeof(gWorldToScreen));
+			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -576,13 +581,21 @@ void OffsetsUpdate() {
 	while (1) {
 		JUNK_BLOCK_1; // Signature noise
 		while (esp) {
+			if (!g_memory || !entityListBuffer || hw == 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				continue;
+			}
 			
 			// We read the whole entity list at once for efficiency
-			memory.ReadHugeMemory(hw + 0x12043CC, entityListBuffer, entityListSize);
+			g_memory->ReadHugeMemory(hw + 0x12043CC, entityListBuffer, entityListSize);
 			
 			for (int i = 0; i < 64; i++)
 			{
-				float playerX = memory.ReadModuleBuffer<float>(entityListBuffer, i * 0x0250 + 0x0184);
+				// Bounds check: make sure we don't read past buffer
+				size_t baseOffset = (size_t)i * 0x0250;
+				if (baseOffset + 0x018C + sizeof(float) > entityListSize) break;
+				
+				float playerX = g_memory->ReadModuleBuffer<float>(entityListBuffer, baseOffset + 0x0184);
 
 				if (!playerX) {
 					// Clear data if player invalid
@@ -591,30 +604,33 @@ void OffsetsUpdate() {
 					continue;
 				}
 
-				float playerY = memory.ReadModuleBuffer<float>(entityListBuffer, i * 0x0250 + 0x0188);
-				float playerZ = memory.ReadModuleBuffer<float>(entityListBuffer, i * 0x0250 + 0x018C);
+				float playerY = g_memory->ReadModuleBuffer<float>(entityListBuffer, baseOffset + 0x0188);
+				float playerZ = g_memory->ReadModuleBuffer<float>(entityListBuffer, baseOffset + 0x018C);
 
 				// Feet Position
 				// Adjustable Bone Z for Head
 				Vector3 TargetPos = { playerX , playerY , playerZ + aimbot_bone_z };
 				
-				// Head Position (Approximation: +60 units Z for standing, +40 for ducking usually, keeping simple for external)
-				// ideally check flags for ducking. For now, let's assume standing height approx 60-70 units.
+				// Head Position (Approximation: +60 units Z for standing)
 				Vector3 TargetHeadPos = { playerX, playerY, playerZ + 60.0f }; 
 
 				if (def_models) {
-					uintptr_t modelAddress = i * 0x0250 + 0x012C;
+					if (baseOffset + 0x012C + 64 > entityListSize) continue; // Safety
+					uintptr_t modelAddress = baseOffset + 0x012C;
 					std::string model;
 					char ch2;
+					int maxRead = 64; // CRITICAL FIX: Limit string read to prevent infinite loop
 					// Read model name
 					do {
-						ch2 = memory.ReadModuleBuffer<char>(entityListBuffer, modelAddress);
+						if (modelAddress >= entityListSize) break; // Buffer bounds check
+						ch2 = g_memory->ReadModuleBuffer<char>(entityListBuffer, modelAddress);
 						model.push_back(ch2);
 						++modelAddress;
-					} while (ch2 != '\0');
+						--maxRead;
+					} while (ch2 != '\0' && maxRead > 0);
 
 
-					int team = memory.Read<int>(client + 0x100DF4);
+					int team = g_memory->Read<int>(client + 0x100DF4);
 
 					bool isTeammate = false;
 					if ((team == 2 && (model.find(xorstr_("urban")) != std::string::npos ||
@@ -637,11 +653,6 @@ void OffsetsUpdate() {
 
 				// W2S
 				bool onScreenFeet = WorldToScreen(TargetPos, screenPositionTemp);
-				// We don't necessarily need to check return of W2S for head if feet is visible, but good practice.
-				// However, W2S function in this codebase (w2s.h) returns void/bool? (checked w2s.h content previously conceptually, assuming void or simple fill)
-				// The original code passed 'screenPositionTemp' which is float[2].
-				
-				// Let's call W2S for Head
 				WorldToScreen(TargetHeadPos, screenPositionHeadTemp);
 
 				// Synchronization Lock
@@ -650,55 +661,19 @@ void OffsetsUpdate() {
 					players[i].screenPosition[0] = screenPositionTemp[0]; 
 					players[i].screenPosition[1] = screenPositionTemp[1];
 					
-					// Store head screen pos in the Z component or separate if we extend struct. 
-					// The struct PlayerPosition has float screenPosition[2]. We can't fit head there.
-					// We need to upgrade struct logic or just use height.
-					// For now, let's use the standard "Height = Feet.y - Head.y" logic during Draw, 
-					// but we need to pass the head position or height to the Draw function.
-					// Since we can't easily change struct.h in this step without breaking other things heavily,
-					// let's hack it: We will calculate the 2D height here and store it?
-					// No, players[i] is global.
-					// Let's assume we can change struct.h later if strictly needed, but manual says "VIP".
-					// Actually, looking at Overlay.h -> DrawEspBox2D takes feet and head.
-					// We need to pass feet and head to Draw.
-					// The struct current: float screenPosition[2]
-					// We MUST update struct.h to hold head position too.
-					
-					// Wait, I cannot change struct.h in this multi_replace block easily if I didn't plan it.
-					// Ideally I should have added `float headScreenPosition[2]` to struct.
-					// Let's assume for this "VIP" Request I will fix struct.h in a separate step if I haven't.
-					// BUT I ALREADY EDITED STRUCT.H and missed adding head pos.
-					// I should have added it. For now, I will skip filling head in struct 
-					// and just use a fixed height in Draw as a fallback OR I will utilize unused fields?
-					// No, I will do a subsequent edit to Struct.h to add Head Position if needed.
-					// actually, let's just stick to "Box based on Feet" for now inside the limitations, 
-					// OR better: I will Edit main.cpp now, and then I will do a quick fix on struct.h right after.
-					
-					// For NOW: I will store Head.y in 'state' if unused? No state is dead check.
-					// Okay, I will modify struct.h in the NEXT step to standard. 
-					// Here I will prepare the data assuming struct has 'headPosition'.
-					
-					// Wait, I can't write code that refuses to compile.
-					// I will revert to standard behavior but SAFE first.
-					// I will keep the original logic for now but THREAD SAFE.
-					// AND I will add Junk Code.
-					
-					// To fix Box ESP properly, I need to pass the Head coordinate. 
-					// I will add a TO-DO comment here for the struct update.
-					
-					// Temporary "Height" estimation for Box if we only have feet:
-					// Box Height ~ distance based?
-					// Let's just keep it simple safe update for now.
-					
 					if (enemy_name) {
+						if (baseOffset + 0x0100 + 32 > entityListSize) continue; // Safety
 						std::string name;
-						uintptr_t nameAddress = i * 0x0250 + 0x0100;
+						uintptr_t nameAddress = baseOffset + 0x0100;
 						char ch1;
+						int maxNameRead = 32; // CRITICAL FIX: Limit name read
 						do {
-							ch1 = memory.ReadModuleBuffer<char>(entityListBuffer, nameAddress);
+							if (nameAddress >= entityListSize) break; // Buffer bounds check
+							ch1 = g_memory->ReadModuleBuffer<char>(entityListBuffer, nameAddress);
 							name.push_back(ch1);
 							++nameAddress;
-						} while (ch1 != '\0');						
+							--maxNameRead;
+						} while (ch1 != '\0' && maxNameRead > 0);						
 						players[i].name = name;
 					}
 				} // End Lock
@@ -716,29 +691,41 @@ void DeadCheck() {
 
 	while (1) {
 		while (esp) {
+			if (!g_memory || !entityListBuffer) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				continue;
+			}
 
 			for (int i = 0; i < 64; i++)
 			{
-				playerX = memory.ReadModuleBuffer<float>(entityListBuffer, i * 0x0250 + 0x0184);
+				size_t baseOffset = (size_t)i * 0x0250;
+				if (baseOffset + 0x0184 + sizeof(float) > entityListSize) break;
+				
+				playerX = g_memory->ReadModuleBuffer<float>(entityListBuffer, baseOffset + 0x0184);
 
 				if (!playerX) continue;
 
-				stateTemp = memory.ReadModuleBuffer<float>(entityListBuffer, i * 0x0250 + 0x017C + 0x1);
+				if (baseOffset + 0x017D + sizeof(float) > entityListSize) break;
+				stateTemp = g_memory->ReadModuleBuffer<float>(entityListBuffer, baseOffset + 0x017C + 0x1);
 
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-				if (stateTemp == players[i].state) {
-					if (!players[i].dead) {
-						players[i].screenPosition[0] = 0;
-						players[i].screenPosition[1] = 0;
-						players[i].dead = true;
+				// CRITICAL FIX: Use mutex when modifying players[]
+				{
+					std::lock_guard<std::mutex> lock(playerMutex);
+					if (stateTemp == players[i].state) {
+						if (!players[i].dead) {
+							players[i].screenPosition[0] = 0;
+							players[i].screenPosition[1] = 0;
+							players[i].dead = true;
+						}
+						players[i].state = stateTemp;
+						continue;
 					}
-					players[i].state = stateTemp;
-					continue;
-				}
-				else {
-					players[i].dead = false;
-					players[i].state = stateTemp;
+					else {
+						players[i].dead = false;
+						players[i].state = stateTemp;
+					}
 				}
 
 			}
@@ -807,14 +794,17 @@ void LobbyCheck() {
 			// ESP AÇIK: Aimbot burada da çalışsın!
 			AimbotLogic();
 			
-			int lobby = memory.Read<int>(hw + 0x105CFC8);
+			if (g_memory && hw != 0) {
+				int lobby = g_memory->Read<int>(hw + 0x105CFC8);
 
-			if (!lobby && !in_lobby) {
-				memset(players, 0, sizeof(players));
-				in_lobby = true;
-			}
-			else if (lobby) {
-				in_lobby = false;
+				if (!lobby && !in_lobby) {
+					std::lock_guard<std::mutex> lock(playerMutex);
+					memset(players, 0, sizeof(players));
+					in_lobby = true;
+				}
+				else if (lobby) {
+					in_lobby = false;
+				}
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 100Hz - Daha hızlı, ama salak gibi değil
 		}
@@ -1114,17 +1104,13 @@ void MainLoop() {
 		io.MousePos.x = TempPoint2.x - TempPoint.x;
 		io.MousePos.y = TempPoint2.y - TempPoint.y;
 
-        // FIX: Re-enable manual input handling but keep it safe.
-		// ImGui sometimes needs manual input feed for external overlays if WndProc isn't perfect.
+        // FIX: Only set MouseDown - NEVER set MouseClicked manually!
+		// MouseClicked is calculated internally by ImGui. Setting it manually corrupts state = CRASH!
 		if (ShowMenu) { // Only force input when Menu is OPEN
-			if (GetAsyncKeyState(0x1) & 0x8000) { // VK_LBUTTON
-				io.MouseDown[0] = true;
-				io.MouseClicked[0] = true;
-			}
-			else {
-				io.MouseDown[0] = false;
-				io.MouseClicked[0] = false;
-			}
+			io.MouseDown[0] = (GetAsyncKeyState(0x1) & 0x8000) != 0; // VK_LBUTTON
+		}
+		else {
+			io.MouseDown[0] = false;
 		}
 
 		if (TempRect.left != OldRect.left || TempRect.right != OldRect.right || TempRect.top != OldRect.top || TempRect.bottom != OldRect.bottom) {
@@ -1298,6 +1284,7 @@ bool DirectXInit() {
 	g_Logger.LogStep("ImGui_ImplDX9_Init tamamlandi");
 	
 	DirectX9Interface::Direct3D9->Release();
+	DirectX9Interface::Direct3D9 = NULL; // CRITICAL FIX: Prevent double-release in WM_DESTROY
 	g_Logger.LogSuccess("DirectXInit() basariyla tamamlandi!");
 	return true;
 }
@@ -1324,7 +1311,10 @@ LRESULT CALLBACK WinProc(HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam) 
 			ImGui_ImplDX9_InvalidateDeviceObjects();
 			DirectX9Interface::pParams.BackBufferWidth = LOWORD(lParam);
 			DirectX9Interface::pParams.BackBufferHeight = HIWORD(lParam);
-			ImGui_ImplDX9_CreateDeviceObjects();
+			HRESULT hr = DirectX9Interface::pDevice->Reset(&DirectX9Interface::pParams);
+			if (SUCCEEDED(hr)) {
+				ImGui_ImplDX9_CreateDeviceObjects();
+			}
 		}
 		break;
 	default:
@@ -1511,6 +1501,36 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 	g_Logger.LogValue("Game PID", Game::PID);
 	g_Logger.LogGameInfo(hwnd1, Game::PID);
 
+	// ========== MEMORY OBJECT INITIALIZATION ==========
+	// CRITICAL FIX: Create Memory object HERE, not at global scope!
+	// Global scope runs before main() - game might not be running yet = crash
+	g_Logger.LogStep("Memory nesnesi olusturuluyor...");
+	g_memory = new Memory(xorstr_("hl.exe"));
+	if (!g_memory) {
+		g_Logger.LogError("MEMORY_INIT_FAILED", "Memory nesnesi olusturulamadi.", "Yeniden deneyin.");
+		MessageBox(NULL, "Bellek hatasi!", "EVELION", MB_ICONERROR);
+		exit(0);
+	}
+	g_Logger.LogStep("Memory nesnesi olusturuldu");
+	
+	// Get module addresses NOW (after process is confirmed)
+	hw = g_memory->GetModuleAddress(xorstr_("hw.dll"));
+	client = g_memory->GetModuleAddress(xorstr_("client.dll"));
+	
+	// Allocate buffers with null checks
+	viewMatrixBuffer = malloc(viewMatrixSize);
+	entityListBuffer = malloc(entityListSize);
+	if (!viewMatrixBuffer || !entityListBuffer) {
+		g_Logger.LogError("MALLOC_FAILED", "Bellek tahsisi basarisiz (malloc returned NULL).",
+			"Yeterli RAM yok. Diger programlari kapatin.");
+		MessageBox(NULL, "Bellek yetersiz! Diger programlari kapatin.", "EVELION", MB_ICONERROR);
+		exit(0);
+	}
+	// Zero-initialize buffers to prevent garbage data
+	memset(viewMatrixBuffer, 0, viewMatrixSize);
+	memset(entityListBuffer, 0, entityListSize);
+	g_Logger.LogStep("Bellek buffer'lari tahsis edildi");
+
 	// ========== MODUL ADRESLERI ==========
 	g_Logger.LogStep("Modul adresleri okunuyor...");
 	g_Logger.LogModuleInfo("hw.dll", hw);
@@ -1543,13 +1563,14 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 			"Oyun pencereli modda degil veya minimize edilmis olabilir.");
 	}
 
+	// ========== CONFIG YUKLEME (SADECE BIR KERE) ==========
+	Config::Load();
+	g_Logger.LogStep("Config yuklendi");
+
 	// ========== THREAD'LER BASLATILIYOR ==========
 	g_Logger.LogStep("Thread'ler baslatiliyor...");
 	std::thread aliveThread(ProcessAlive);
 	g_Logger.LogStep("  -> ProcessAlive thread OK");
-	
-	Config::Load();
-	g_Logger.LogStep("  -> Config Loaded Successfully");
 
 	std::thread matrixThread(MatrixUpdate);
 	g_Logger.LogStep("  -> MatrixUpdate thread OK");
@@ -1575,6 +1596,8 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 		if (Game::PID == ForegroundWindowProcessID) {
 			Process::ID = Game::PID;
 			Process::Hwnd = hwnd1;
+			// CRITICAL FIX: Actually open process handle (was never set before = crash)
+			Process::Handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, Game::PID);
 
 			RECT TempRect;
 			GetWindowRect(Process::Hwnd, &TempRect);
@@ -1611,11 +1634,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 	
-	// ========== CONFIG YUKLEME ==========
-	g_Logger.LogStep("Config dosyasi yukleniyor...");
-	if(DEBUG_MODE) MessageBox(NULL, "STEP 5: Loading Config...", "DEBUG", MB_OK);
-	Config::Load();
-	g_Logger.LogStep("Config yuklendi");
+	// ========== CONFIG ALREADY LOADED BEFORE THREADS ==========
+	// Config::Load() was already called once before threads started.
+	// DO NOT load again here - it causes race conditions with running threads.
+	g_Logger.LogStep("Config zaten yuklu, ikinci yukleme atlanıyor...");
+	if(DEBUG_MODE) MessageBox(NULL, "STEP 5: Config already loaded", "DEBUG", MB_OK);
 	
 	// ========== OVERLAY PENCERESI ==========
 	g_Logger.LogStep("Overlay penceresi olusturuluyor...");

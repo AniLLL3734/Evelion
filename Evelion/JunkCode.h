@@ -6,6 +6,8 @@
 
 // Advanced Junk Code Generator Macro
 // Inserts random operations that do nothing but change the compiled byte-code.
+// NOTE: __asm is NOT supported in x64 MSVC. Using volatile ops instead.
+#ifdef _M_IX86
 #define JUNK_CODE \
     __asm{ push eax } \
     __asm{ xor eax, eax } \
@@ -13,6 +15,15 @@
     __asm{ push eax } \
     __asm{ pop eax } \
     __asm{ pop eax } 
+#else
+#define JUNK_CODE \
+    { \
+        volatile int _jkasm = 0; \
+        _jkasm ^= _jkasm; \
+        _jkasm = (_jkasm == 0) ? 1 : 0; \
+        (void)_jkasm; \
+    }
+#endif
 
 #define JUNK_BLOCK_1 \
     { \

@@ -39,7 +39,7 @@ std::string string_To_UTF8(const std::string& str) {
 }
 
 void DrawStrokeText(int x, int y, RGBA* color, const char* str) {
-	ImFont a;
+	if (!str || !color) return;
 	std::string utf_8_1 = std::string(str);
 	std::string utf_8_2 = string_To_UTF8(utf_8_1);
 	ImGui::GetOverlayDrawList()->AddText(ImVec2(x, y - 1), ImGui::ColorConvertFloat4ToU32(ImVec4(1 / 255.0, 1 / 255.0, 1 / 255.0, 255 / 255.0)), utf_8_2.c_str());
@@ -50,7 +50,7 @@ void DrawStrokeText(int x, int y, RGBA* color, const char* str) {
 }
 
 void DrawNewText(int x, int y, RGBA* color, const char* str) {
-	ImFont a;
+	if (!str || !color) return;
 	std::string utf_8_1 = std::string(str);
 	std::string utf_8_2 = string_To_UTF8(utf_8_1);
 	ImGui::GetOverlayDrawList()->AddText(ImVec2(x, y), ImGui::ColorConvertFloat4ToU32(ImVec4(color->R / 255.0, color->G / 255.0, color->B / 255.0, color->A / 255.0)), utf_8_2.c_str());
